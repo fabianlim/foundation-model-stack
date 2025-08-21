@@ -132,7 +132,7 @@ model = get_model(
 )
 
 # CHANGE2: load from the DCP checkpoint
-print(f"Loading TorchTitan checkpoint from {args.model_path}")
+print(f"Loading FSDP2 checkpoint from {args.model_path}")
 DCP.load({"model": model.state_dict()}, checkpoint_id=args.model_path)
 
 tokenizer = tokenizers.get_tokenizer(args.tokenizer)
