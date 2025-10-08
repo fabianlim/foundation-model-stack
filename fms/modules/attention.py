@@ -219,7 +219,7 @@ def _chunked_decay(
         # if the rightmost element of the block
         # is greater
         offset = c * BLOCK_C - pid_r * chunk_size
-        if offset >= 0 and chunk_size >= offset:
+        if chunk_size >= offset:
             decay = tl.where(
                 (offs_i[:, None] > (offs_j[None, :] + offset)), 
                 decay, 0.0
@@ -514,7 +514,7 @@ def _softmax_with_decay_fwd(
         # if the rightmost element of the block
         # is greater
         offset = c * BLOCK_C - pid_r * chunk_size
-        if offset >= 0 and chunk_size >= offset:
+        if chunk_size >= offset:
             decay = tl.where(
                 (offs_i[:, None] > (offs_j[None, :] + offset)), 
                 decay, 
@@ -555,7 +555,7 @@ def _softmax_with_decay_fwd(
 
         # NOTE: see above notes
         offset = c * BLOCK_C - pid_r * chunk_size
-        if offset >= 0 and chunk_size >= offset:
+        if chunk_size >= offset:
             decay = tl.where(
                 (offs_i[:, None] >= (offs_j[None, :] + offset)), 
                 decay, 
@@ -895,8 +895,8 @@ def _rowwise_bwd(
         # computation of dQ
         # TODO: its not gauranteed that value dim 
         # equals to query and key dim
-        acc = tl.zeros([chunk_size, HEAD_DIM], dtype=tl.float32)
-        acc2 = tl.zeros([chunk_size, HEAD_DIM], dtype=tl.float32)
+        acc = None
+        acc2 = None
         acc3 = None
         acc4 = None
 
@@ -910,7 +910,7 @@ def _rowwise_bwd(
         ).to(tl.float32)
 
         # not needed
-        acc = None
+        acc = tl.zeros([chunk_size, HEAD_DIM], dtype=tl.float32)
         acc2 = None
         acc3 = None
         acc4 = None
@@ -1064,7 +1064,7 @@ def _rowwise_bwd(
         # if the rightmost element of the block
         # is greater
         offset = c * BLOCK_C - pid_r * chunk_size
-        if offset >= 0 and chunk_size >= offset:
+        if chunk_size >= offset:
             decay = tl.where(
                 (offs_i[:, None] > (offs_j[None, :] + offset)), 
                 decay, 
@@ -1094,7 +1094,7 @@ def _rowwise_bwd(
 
         # NOTE: see above notes
         offset = c * BLOCK_C - pid_r * chunk_size
-        if offset >= 0 and chunk_size >= offset:
+        if chunk_size >= offset:
             decay = tl.where(
                 (offs_i[:, None] >= (offs_j[None, :] + offset)), 
                 decay, 
@@ -1141,8 +1141,10 @@ def _rowwise_bwd(
             # dY = score * (dZ - _dzScore)
             #    = dZScore - score * _dzScore
             # we accum score * dZ and score * _dzScore seperately
-            dZScore_prev_sum = dZScore_sum
+            # dZScore_prev_sum = dZScore_sum
             dZScore_sum += tl.sum(dZScore, axis=1)
+
+        elif PASS == 2:
 
             k_mat = tl.load(
                 (
@@ -1157,21 +1159,10 @@ def _rowwise_bwd(
             # first term (score * dZ)
             # - dZ should have the appropriate zeros in the boundary
             acc += tl.dot(
-                dZScore, k_mat
-            )
-
-            # secod term score * (dZ * score).sum(-1)
-            if c > 0:
-                ratio = (
-                    dZScore_sum / dZScore_prev_sum
-                )
-                acc2 *= ratio[:, None]
-
-            acc2 += tl.dot(
+                dZScore - 
                 tl.exp(score) * dZScore_sum[:, None], 
                 k_mat
             )
-        elif PASS == 2:
 
             # in pass 2, we compute the chunked
             # dY, 
@@ -1212,7 +1203,7 @@ def _rowwise_bwd(
             # way to do it
             dYrotate = tl.dot(
                 tl.where(
-                    (offs_i[:, None] - offs_j[None, :]) == 1,
+                    (offs_i[:, None] - offs_i[None, :]) == 1,
                     1.0, 0.0
                 ),
                 dY
@@ -1270,21 +1261,20 @@ def _rowwise_bwd(
                 # this is not decay
                 - tl.log(1.0 - tl.clamp(affinity, 0.0, 1.0 - 1e-6)) 
 
-                # recall it had pow(1/3) applied
-                - 3 * tl.log(tl.clamp(affinity1, 1e-4, 1.0)) 
+                # see the explaination above
+                - tl.log(
+                    tl.maximum(affinity0, 1e-4)
+                ) 
             ) 
 
-            # this is 2 * dZ3
-            B *= tl.where(
-                affinity0 >= 0,
-                2 * affinity0, 0.
-            )
+            B = tl.where(affinity0 > 0, B, 0.)
+
 
             k_mat = tl.load(
                 (
                     keys 
-                    + offs_j[:, None] * v_stride_seq
-                    + offs_v[None, :] * v_stride_dim
+                    + offs_j[:, None] * k_stride_seq
+                    + offs_v[None, :] * k_stride_dim
                 ),
                 mask=(offs_j[:, None] < limit_c),
                 other=0.0
@@ -1309,24 +1299,25 @@ def _rowwise_bwd(
     # -  DONE WITH COL CHUNK LOOPS - 
 
     if PASS == 1:
-        # in PASS 1 we compute dQ 
-        tl.store(
-            (
-                res_dQ_r 
-                + offs_i[:, None] * res_dQ_stride_qseq
-                + offs_v[None, :] * res_dQ_stride_dim
-            ),
-            acc - acc2, 
-            mask=(
-                (offs_i[:, None] < limit_r)
-            )
-        )
 
         # we also output dZScore_sum
         tl.store(
             res_dZsc_r + offs_i * res_dZsc_stride_seq,
             dZScore_sum,
             mask=offs_i < limit_r
+        )
+    elif PASS == 2:
+        # in PASS 2 we compute dQ 
+        tl.store(
+            (
+                res_dQ_r 
+                + offs_i[:, None] * res_dQ_stride_qseq
+                + offs_v[None, :] * res_dQ_stride_dim
+            ),
+            acc, 
+            mask=(
+                (offs_i[:, None] < limit_r)
+            )
         )
     elif PASS == 3:
         # in pass 3 we compute
@@ -1685,13 +1676,12 @@ def _colwise_bwd(
         # if the rightmost element of the block
         # is greater
         # - since r is offset by pid_c, we need to add
-        offset = pid_c * chunk_size - (pid_c + r) * BLOCK_R
-        if offset >= 0 and BLOCK_R >= offset:
-            decay = tl.where(
-                (offs_i[:, None] > (offs_j[None, :] + offset)), 
-                decay, 
-                0.0 # dont set this to -inf yet because we need to cumsum
-            )
+        offset = - r * BLOCK_R 
+        decay = tl.where(
+            (offs_i[:, None] > (offs_j[None, :] + offset)), 
+            decay, 
+            0.0 # dont set this to -inf yet because we need to cumsum
+        )
 
         # cumsum over the chunk rows
         chunk_decay_sum = tl.sum(decay, axis=-2)
@@ -1700,12 +1690,11 @@ def _colwise_bwd(
         decay_prev_chunk += chunk_decay_sum
 
         # same offset as above
-        if offset >= 0 and BLOCK_R >= offset:
-            decay = tl.where(
-                (offs_i[:, None] >= (offs_j[None, :] + offset)), 
-                decay, 
-                - float("inf"), # not set it to inf
-            )
+        decay = tl.where(
+            (offs_i[:, None] >= (offs_j[None, :] + offset)), 
+            decay, 
+            - float("inf"), # not set it to inf
+        )
 
         # ---------- COMPUTE dZScore -------------
         score += decay
@@ -1747,9 +1736,9 @@ def _colwise_bwd(
             (
                 qc_mat_ptr 
                 + offs_v[:, None] * q_stride_dim # NOTE: assumed same
-                + offs_j[None, :] * q_stride_seq
+                + offs_i[None, :] * q_stride_seq
             ),
-            mask=(offs_j[None, :] < limit_c),
+            mask=(offs_i[None, :] < limit_r),
             other=0.0
         ).to(tl.float32)
 
@@ -1765,9 +1754,9 @@ def _colwise_bwd(
             (
                 dout_r 
                 + offs_v[:, None] * do_stride_dim # NOTE: assumed same
-                + offs_j[None, :] * do_stride_seq
+                + offs_i[None, :] * do_stride_seq
             ),
-            mask=(offs_j[None, :] < limit_c),
+            mask=(offs_i[None, :] < limit_r),
             other=0.0
         ).to(tl.float32)
 
@@ -1780,7 +1769,7 @@ def _colwise_bwd(
         # way to do it
         dYrotate = tl.dot(
             tl.where(
-                (offs_i[:, None] - offs_j[None, :]) == 1,
+                (offs_i[:, None] - offs_i[None, :]) == 1,
                 1.0, 0.0
             ),
             dY
@@ -1967,6 +1956,9 @@ class UniversalAttention(Function):
         # ddest *= (
         #     dest.sigmoid() * (1 - dest.sigmoid())
         # )
+
+        # print ('backward')
+
 
         return (
             dK1 + dK2, # k
