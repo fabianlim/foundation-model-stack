@@ -851,14 +851,7 @@ class MultiHeadAttention(nn.Module):
             # Blockwise universal attention
             rates = static_src
 
-            if attn_kwargs.get('mode', None) == 'mine':
-                queries = queries.transpose(1,2)  # b rh l d
-                keys = keys.transpose(1,2)  # b h l d
-                values = values.transpose(1,2)  # b h l d
-                from Universal_Attention_triton.rewrite.autograd import UniversalAttention as UA2
-                attn = UA2.apply(keys, values, queries, static_src, static_dest).to(dtype=queries.dtype)
-                attn = attn.view(-1, self.kvheads, q_len, self.emb_kq_per_head)
-            else:
+            if attn_kwargs.get('mode', None) == 'legacy':
                 queries = queries.transpose(1,2).view(batch_size, -1, self.kvheads, q_len, self.emb_kq_per_head)   # b r h l d
                 keys = keys.transpose(1,2)  # b h l d
                 values = values.transpose(1,2)  # b h l d
@@ -880,6 +873,13 @@ class MultiHeadAttention(nn.Module):
                     attn_mask=M,
                     scale=1,
                 )  # b h l d
+            else:
+                queries = queries.transpose(1,2)  # b rh l d
+                keys = keys.transpose(1,2)  # b h l d
+                values = values.transpose(1,2)  # b h l d
+                from Universal_Attention_triton.rewrite.autograd import UniversalAttention as UA2
+                attn = UA2.apply(keys, values, queries, static_src, static_dest).to(dtype=queries.dtype)
+                attn = attn.view(-1, self.kvheads, q_len, self.emb_kq_per_head)
 
             attn = attn.transpose(1,2).contiguous()  # b l h d
             affs = None
