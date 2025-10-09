@@ -849,20 +849,38 @@ class MultiHeadAttention(nn.Module):
             
         else:
             # Blockwise universal attention
-            queries = queries.transpose(1,2).view(batch_size, -1, self.kvheads, q_len, self.emb_kq_per_head)   # b r h l d
-            keys = keys.transpose(1,2)  # b h l d
-            values = values.transpose(1,2)  # b h l d
             rates = static_src
 
-            mask = _gen_affinity_scores(keys, static_src, static_dest)  # b h l_q l_k
-            r = self.nheads // self.kvheads
-            torch.backends.cuda.enable_math_sdp(False)
-            attn = F.scaled_dot_product_attention(
-                queries.reshape(-1, *queries.size()[-3:]), 
-                keys[:,None].expand(-1, r, -1, -1, -1).reshape(-1, *keys.size()[-3:]), 
-                values[:,None].expand(-1, r, -1, -1, -1).reshape(-1, *values.size()[-3:]), 
-                attn_mask=mask[:,None].expand(-1, r, -1, -1, -1).reshape(-1, *mask.size()[-3:]),
-            )  # b h l d
+            if attn_kwargs.get('mode', None) == 'mine':
+                queries = queries.transpose(1,2)  # b rh l d
+                keys = keys.transpose(1,2)  # b h l d
+                values = values.transpose(1,2)  # b h l d
+                from Universal_Attention_triton.rewrite.autograd import UniversalAttention as UA2
+                attn = UA2.apply(keys, values, queries, static_src, static_dest).to(dtype=queries.dtype)
+                attn = attn.view(-1, self.kvheads, q_len, self.emb_kq_per_head)
+            else:
+                queries = queries.transpose(1,2).view(batch_size, -1, self.kvheads, q_len, self.emb_kq_per_head)   # b r h l d
+                keys = keys.transpose(1,2)  # b h l d
+                values = values.transpose(1,2)  # b h l d
+                mask = _gen_affinity_scores(keys, static_src, static_dest)  # b h l_q l_k
+                r = self.nheads // self.kvheads
+                torch.backends.cuda.enable_math_sdp(False)
+                # attn = F.scaled_dot_product_attention(
+                #     queries.reshape(-1, *queries.size()[-3:]), 
+                #     keys[:,None].expand(-1, r, -1, -1, -1).reshape(-1, *keys.size()[-3:]), 
+                #     values[:,None].expand(-1, r, -1, -1, -1).reshape(-1, *values.size()[-3:]), 
+                #     attn_mask=mask[:,None].expand(-1, r, -1, -1, -1).reshape(-1, *mask.size()[-3:]),
+                # )  # b h l d
+                Q = queries.reshape(-1, *queries.size()[-3:])
+                K = keys[:,:,None].expand(-1, -1, r, -1, -1).reshape(-1, *keys.size()[-3:])
+                V = values[:,:,None].expand(-1, -1, r, -1, -1).reshape(-1, *values.size()[-3:])
+                M = mask[:,None].expand(-1, r, -1, -1, -1).reshape(-1, *mask.size()[-3:])
+                attn = F.scaled_dot_product_attention(
+                    Q, K, V,
+                    attn_mask=M,
+                    scale=1,
+                )  # b h l d
+
             attn = attn.transpose(1,2).contiguous()  # b l h d
             affs = None
 
