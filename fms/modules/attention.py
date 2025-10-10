@@ -864,10 +864,14 @@ class MultiHeadAttention(nn.Module):
                 #     values[:,None].expand(-1, r, -1, -1, -1).reshape(-1, *values.size()[-3:]), 
                 #     attn_mask=mask[:,None].expand(-1, r, -1, -1, -1).reshape(-1, *mask.size()[-3:]),
                 # )  # b h l d
-                Q = queries.reshape(-1, *queries.size()[-3:])
-                K = keys[:,:,None].expand(-1, -1, r, -1, -1).reshape(-1, *keys.size()[-3:])
-                V = values[:,:,None].expand(-1, -1, r, -1, -1).reshape(-1, *values.size()[-3:])
-                M = mask[:,None].expand(-1, r, -1, -1, -1).reshape(-1, *mask.size()[-3:])
+                # Q = queries.reshape(-1, *queries.size()[-3:])
+                # K = keys[:,:,None].expand(-1, -1, r, -1, -1).reshape(-1, *keys.size()[-3:])
+                # V = values[:,:,None].expand(-1, -1, r, -1, -1).reshape(-1, *values.size()[-3:])
+                # M = mask[:,None].expand(-1, r, -1, -1, -1).reshape(-1, *mask.size()[-3:])
+                Q = queries.view(batch_size, self.nheads, q_len, -1)
+                K = torch.repeat_interleave(keys, repeats=r, dim=1)
+                V = torch.repeat_interleave(values, repeats=r, dim=1)
+                M = torch.repeat_interleave(mask, repeats=r, dim=1)
                 attn = F.scaled_dot_product_attention(
                     Q, K, V,
                     attn_mask=M,
@@ -877,9 +881,15 @@ class MultiHeadAttention(nn.Module):
                 queries = queries.transpose(1,2)  # b rh l d
                 keys = keys.transpose(1,2)  # b h l d
                 values = values.transpose(1,2)  # b h l d
+                if attn_kwargs.get('mode', None) == 'rep':
+                    r = self.nheads // self.kvheads
+                    keys = torch.repeat_interleave(keys, repeats=r, dim=1)
+                    values = torch.repeat_interleave(values, repeats=r, dim=1)
+                    static_src = torch.repeat_interleave(static_src, repeats=r, dim=1)
+                    static_dest = torch.repeat_interleave(static_dest, repeats=r, dim=1)
                 from Universal_Attention_triton.rewrite.autograd import UniversalAttention as UA2
                 attn = UA2.apply(keys, values, queries, static_src, static_dest).to(dtype=queries.dtype)
-                attn = attn.view(-1, self.kvheads, q_len, self.emb_kq_per_head)
+                # attn = attn.view(-1, self.kvheads, q_len, self.emb_kq_per_head)
 
             attn = attn.transpose(1,2).contiguous()  # b l h d
             affs = None
