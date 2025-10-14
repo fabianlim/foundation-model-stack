@@ -657,14 +657,21 @@ class MultiHeadAttention(nn.Module):
 
         # note: transposes will be moved in a later PR to fix dis-contiguous tensor issues
         queries = q_out.view(batch_size, q_len, self.nheads, self.emb_kq_per_head)
-        keys = k_out.view(batch_size, q_len, self.kvheads, self.emb_kq_per_head)
-        values = v_out.view(batch_size, q_len, self.kvheads, self.emb_v_per_head)
 
-        # You want to apply rotary embeddings pre-cache
-        if self.position_encoder is not None:
-            queries, keys = self.position_encoder.adjusted_qk(
-                queries, keys, position_ids, past_key_value_state, use_cache
-            )
+        if attn_kwargs.get('disagg', False) == True:
+            # overwrite
+            keys, values = attn_kwargs['load_kvs'].pop(0)
+            keys = keys.to(queries.dtype)
+            values = values .to(queries.dtype)
+        else:
+            keys = k_out.view(batch_size, q_len, self.kvheads, self.emb_kq_per_head)
+            values = v_out.view(batch_size, q_len, self.kvheads, self.emb_v_per_head)
+
+            # You want to apply rotary embeddings pre-cache
+            if self.position_encoder is not None:
+                queries, keys = self.position_encoder.adjusted_qk(
+                    queries, keys, position_ids, past_key_value_state, use_cache
+                )
 
         attn_compute_dict = get_attention_type(**attn_kwargs)
 

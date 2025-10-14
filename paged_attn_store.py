@@ -105,10 +105,7 @@ def prepare_inputs(
         current_tkv_mask = current_tkv_mask + 1
         block_offset = pos_i % BLOCK_SIZE
         slot = block_table[-1] * BLOCK_SIZE + block_offset
-        try:
-            slot_mapping = torch.tensor([[slot]], dtype=torch.int64)
-        except:
-            import pdb; pdb.set_trace()
+        slot_mapping = torch.tensor([[slot]], dtype=torch.int64)
         left_padded_prompt_mask = kwargs['left_padded_prompt_mask']
 
         block_table = torch.tensor(
@@ -171,6 +168,7 @@ def prefill(
     past_key_value_states: List,
     block_numbers: List,
     input_kwargs: Dict = {},
+    load_kvs: List = None,
 ):
 
     input_ids, kwargs = prepare_inputs(
@@ -189,6 +187,10 @@ def prefill(
             # 'slot_mapping',
         ]
     }
+
+    if load_kvs is not None:
+        _prefill_kwargs['disagg'] = True
+        _prefill_kwargs['load_kvs'] = load_kvs
 
     logits, cache = model(
         input_ids,
@@ -240,6 +242,7 @@ def decode(
 
     return results
 
+# need to compile the PAS
 def paged_attn_store(
     cache: List,
     current_kv_cache: List,
@@ -257,7 +260,28 @@ def paged_attn_store(
 
     return new_kv_cache 
 
+def extract_kvs_from_cache(result_key_cache, result_value_cache, slot_mapping):
+
+    keys = torch.zeros((len(slot_mapping), 64) + tuple(result_key_cache.shape[-2:]))
+    vals = torch.zeros((len(slot_mapping), 64) + tuple(result_key_cache.shape[-2:]))
+    for seq_i, slot_mapping_seq in enumerate(slot_mapping):
+        for tok_i, slot in enumerate(slot_mapping_seq):
+            block_number = slot.item() // 64
+            position = slot.item() % 64
+
+            keys[seq_i, tok_i, :, :] = result_key_cache[block_number, position, :, :]
+            vals[seq_i, tok_i, :, :] = result_value_cache[block_number, position, :, :]
+            
+    return keys, vals
+
+
 if __name__ == '__main__':
+
+    TEST_MODE_REG = 'regular'
+    TEST_MODE_PAS = 'pas'
+    TEST_MODE_MOD = 'fake'
+    TEST_MODE = os.environ.get('TEST_MODE', 'regular')
+    # TEST_MODE = 'fake'
 
     os.environ['TORCH_SENDNN_LOG'] = 'INFO'
 
@@ -310,24 +334,25 @@ if __name__ == '__main__':
         fused_weights=False,
     )
 
-    # get a validation model
-    model_validation = get_model(
-        architecture='hf_pretrained',
-        variant=MODEL,
-        model_path=None,
-        device_type="cpu",
-        data_type=DTYPE,
-        source=None,
-        distributed_strategy=None,
-        group=None,
-        linear_config={"linear_type": "torch_linear"},
-        fused_weights=False,
-    )
-    model_validation.load_state_dict(model.state_dict())
+    if TEST_MODE != TEST_MODE_REG:
+        # get a validation model
+        model_validation = get_model(
+            architecture='hf_pretrained',
+            variant=MODEL,
+            model_path=None,
+            device_type="cpu",
+            data_type=DTYPE,
+            source=None,
+            distributed_strategy=None,
+            group=None,
+            linear_config={"linear_type": "torch_linear"},
+            fused_weights=False,
+        )
+        model_validation.load_state_dict(model.state_dict())
+        model_validation.eval()
 
     # - set these 
     model.eval()
-    model_validation.eval()
     torch.set_grad_enabled(False)
 
     # DONT DO THIS (BAD THINGS WILL HAPPEN)
@@ -385,14 +410,45 @@ if __name__ == '__main__':
 
     # - warming up
     print("WARMING UP")
+    print ('mode', TEST_MODE)
     BLOCK_NUMBERS = [2, 0, 1, 3]
-    with warmup_mode():
-        logits, cache, kwargs = prefill(
-            model,
+    # model = model_validation ## DEBUG
+
+    if TEST_MODE == TEST_MODE_MOD:
+        # from copy import deepcopy
+        # simulate logits created on prefill machine
+        logits, cache_prefill, kwargs_prefill = prefill(
+            model_validation,
             inputs, 
-            past_key_value_states=past_key_value_states,
-            block_numbers=BLOCK_NUMBERS,
+            past_key_value_states=past_key_value_states, # can try to even change this
+            block_numbers=[1,2,3,0], # maybe not needed
         )
+        logits_prefill = logits
+        kvs = []
+        for K, V in cache_prefill:
+            k, v = extract_kvs_from_cache(K, V, kwargs_prefill['slot_mapping'])
+            torch._dynamo.mark_dynamic(k, 1)
+            torch._dynamo.mark_dynamic(v, 1)
+            kvs.append((k,v))
+        from copy import deepcopy
+        kvs2 = deepcopy(kvs)
+    with warmup_mode():
+        if TEST_MODE == TEST_MODE_MOD:
+            # prefill to load the kvs
+            _, cache, kwargs = prefill(
+                model,
+                inputs, 
+                past_key_value_states=past_key_value_states,
+                block_numbers=BLOCK_NUMBERS,
+                load_kvs=kvs,
+            )
+        else:
+            logits, cache, kwargs = prefill(
+                model,
+                inputs, 
+                past_key_value_states=past_key_value_states,
+                block_numbers=BLOCK_NUMBERS,
+            )
         results = decode(
             model,
             kwargs,
@@ -405,16 +461,34 @@ if __name__ == '__main__':
     # - first inference after warmup
     print("RUNNING INFERENCE")
     BLOCK_NUMBERS = [2, 0, 1, 3]
-    logits, cache, kwargs = prefill(
-        model,
-        inputs, 
-        past_key_value_states=past_key_value_states,
-        block_numbers=BLOCK_NUMBERS,
-    )
+    if TEST_MODE == TEST_MODE_MOD:
+        # logits, _, _= prefill(
+        #     model_validation,
+        #     inputs, 
+        #     past_key_value_states=past_key_value_states, # can try to even change this
+        #     block_numbers=[1,2,3,0], # maybe not needed
+        # )
+        _, cache, kwargs = prefill(
+            model,
+            inputs, 
+            past_key_value_states=past_key_value_states,
+            block_numbers=BLOCK_NUMBERS,
+            # disagg=True,
+            load_kvs=kvs2,
+        )
+    else:
+        logits, cache, kwargs = prefill(
+            model,
+            inputs, 
+            past_key_value_states=past_key_value_states,
+            block_numbers=BLOCK_NUMBERS,
+        )
+        logits_prefill = logits
+
     results = decode(
         model,
         kwargs,
-        logits, 
+        logits_prefill, 
         max_new_tokens=7,
         cache=cache,
         block_numbers=BLOCK_NUMBERS,
@@ -424,17 +498,40 @@ if __name__ == '__main__':
     # - test
     print ("RUNNING TEST")
     BLOCK_NUMBERS = [2, 0, 1, 3]
-    # prompt = "This is a new instruction that has not yet been seen. Please introduce yourself and tell me a joke."
-    # inputs_new = tokenizer(prompt, return_tensors="pt")
+   #  prompt = "This is a new instruction that has not yet been seen. Please introduce yourself and tell me a joke."
+   #  inputs_new = tokenizer(prompt, return_tensors="pt")
     inputs_new = inputs
+    if TEST_MODE == TEST_MODE_MOD:
+        logits_new, cache_prefill_new, kwargs_prefill_new = prefill(
+            model_validation,
+            inputs_new, 
+            past_key_value_states=past_key_value_states, # can try to even change this
+            block_numbers=[1,2,3,0], # maybe not needed
+        )
+        kvs_new = []
+        for K, V in cache_prefill_new:
+            k, v = extract_kvs_from_cache(K, V, kwargs_prefill_new['slot_mapping'])
+            torch._dynamo.mark_dynamic(k, 1)
+            torch._dynamo.mark_dynamic(v, 1)
+            kvs_new.append((k,v))
 
     if True:
-        logits_new, cache_new, kwargs_new = prefill(
-            # model, inputs, 
-            model, inputs_new, 
-            past_key_value_states=past_key_value_states,
-            block_numbers=BLOCK_NUMBERS,
-        )
+        if TEST_MODE == TEST_MODE_MOD:
+            _, cache_new, kwargs_new = prefill(
+                # model, inputs, 
+                model, inputs_new, 
+                past_key_value_states=past_key_value_states,
+                block_numbers=BLOCK_NUMBERS,
+                #disagg=True,
+                load_kvs=kvs_new,
+            )
+        else:
+            logits_new, cache_new, kwargs_new = prefill(
+                # model, inputs, 
+                model, inputs_new, 
+                past_key_value_states=past_key_value_states,
+                block_numbers=BLOCK_NUMBERS,
+            )
         # logits_new, cache_new, kwargs_new = (
         #     logits, cache, kwargs
         # )
@@ -457,7 +554,7 @@ if __name__ == '__main__':
         )
 
     print ("LOGITS")
-    print(logits)
+    print(logits_new)
 
     # tensor([[ 0.6562, -6.0938, -5.9844,  ..., -6.0078, -6.0000, -6.0000]],
     #b      dtype=torch.float16)
@@ -471,4 +568,5 @@ if __name__ == '__main__':
         cache=cache_new,
         block_numbers=BLOCK_NUMBERS,
     )
+    print ("FINAL DECODE")
     print (tokenizer.decode(results_new))
