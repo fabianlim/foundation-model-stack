@@ -189,7 +189,6 @@ def prefill(
     }
 
     if load_kvs is not None:
-        _prefill_kwargs['disagg'] = True
         _prefill_kwargs['load_kvs'] = load_kvs
 
     logits, cache = model(
@@ -498,9 +497,9 @@ if __name__ == '__main__':
     # - test
     print ("RUNNING TEST")
     BLOCK_NUMBERS = [2, 0, 1, 3]
-   #  prompt = "This is a new instruction that has not yet been seen. Please introduce yourself and tell me a joke."
-   #  inputs_new = tokenizer(prompt, return_tensors="pt")
-    inputs_new = inputs
+    prompt = "This is a new instruction that has not yet been seen. Please introduce yourself and tell me a joke."
+    inputs_new = tokenizer(prompt, return_tensors="pt")
+    # inputs_new = inputs
     if TEST_MODE == TEST_MODE_MOD:
         logits_new, cache_prefill_new, kwargs_prefill_new = prefill(
             model_validation,

@@ -658,7 +658,7 @@ class MultiHeadAttention(nn.Module):
         # note: transposes will be moved in a later PR to fix dis-contiguous tensor issues
         queries = q_out.view(batch_size, q_len, self.nheads, self.emb_kq_per_head)
 
-        if attn_kwargs.get('disagg', False) == True:
+        if attn_kwargs.get('kvs', None ) is not None:
             # overwrite
             keys, values = attn_kwargs['load_kvs'].pop(0)
             keys = keys.to(queries.dtype)
