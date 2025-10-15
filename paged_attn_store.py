@@ -152,7 +152,8 @@ def prepare_inputs(
 
     return input_ids, kwargs
 
-def randomize_input_ids(inputs: Dict, vocab_size: int):
+def randomize_input_ids(inputs: Dict, vocab_size: int, seed: int = 42):
+    torch.manual_seed(42)
     inputs_mod = copy(inputs)
     inputs_mod['input_ids'] = torch.randint(
         0, high=vocab_size,
@@ -210,7 +211,7 @@ def prefill(
     )
 
     return (
-        logits[:, 0, :], # NOTE WHY WHY WHY?
+        logits[:, 0, :] if logits is not None else None, # NOTE WHY WHY WHY?
         cache,
         kwargs
     )
@@ -531,7 +532,7 @@ if __name__ == '__main__':
         cache=cache,
         block_numbers=BLOCK_NUMBERS,
     )
-    # print (tokenizer.decode(results))
+    print (tokenizer.decode(results))
 
     # - test
     print ("RUNNING TEST")

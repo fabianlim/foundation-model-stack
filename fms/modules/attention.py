@@ -641,6 +641,26 @@ class MultiHeadAttention(nn.Module):
             returned in the form (hidden_state, cache) where hidden_state is a tensor and cache is of the form specified
             in past_key_value_state
         """
+        load_kvs = attn_kwargs.pop('load_kvs', None)
+        attn_compute_dict = get_attention_type(**attn_kwargs)
+        if load_kvs is not None:
+            # overwrite
+            keys, values = load_kvs
+            keys = keys.to(past_key_value_state[0].dtype)
+            values = values.to(past_key_value_state[0].dtype)
+
+            keys_compute, values_compute, keys_return, values_return = (
+                attn_compute_dict["store"](
+                    keys,
+                    values,
+                    past_key_value_state[0],
+                    past_key_value_state[1],
+                    **attn_kwargs,
+                )
+            )
+
+            return None, (keys_return, values_return)
+
         # q, k, v: batch_size x seq_len x emb_dim
         # mask: batch_size x seq_len x seq_len
         batch_size, q_len, _ = q.size()
@@ -658,23 +678,14 @@ class MultiHeadAttention(nn.Module):
         # note: transposes will be moved in a later PR to fix dis-contiguous tensor issues
         queries = q_out.view(batch_size, q_len, self.nheads, self.emb_kq_per_head)
 
-        attn_compute_dict = get_attention_type(**attn_kwargs)
+        keys = k_out.view(batch_size, q_len, self.kvheads, self.emb_kq_per_head)
+        values = v_out.view(batch_size, q_len, self.kvheads, self.emb_v_per_head)
 
-        load_kvs = attn_kwargs.get('load_kvs')
-        if attn_compute_dict["is_prefill"](**attn_kwargs) and load_kvs is not None:
-            # overwrite
-            keys, values = load_kvs
-            keys = keys.to(queries.dtype)
-            values = values .to(queries.dtype)
-        else:
-            keys = k_out.view(batch_size, q_len, self.kvheads, self.emb_kq_per_head)
-            values = v_out.view(batch_size, q_len, self.kvheads, self.emb_v_per_head)
-
-            # You want to apply rotary embeddings pre-cache
-            if self.position_encoder is not None:
-                queries, keys = self.position_encoder.adjusted_qk(
-                    queries, keys, position_ids, past_key_value_state, use_cache
-                )
+        # You want to apply rotary embeddings pre-cache
+        if self.position_encoder is not None:
+            queries, keys = self.position_encoder.adjusted_qk(
+                queries, keys, position_ids, past_key_value_state, use_cache
+            )
 
         if use_cache:
             if past_key_value_state is None:

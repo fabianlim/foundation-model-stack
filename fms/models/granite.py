@@ -122,6 +122,16 @@ class GraniteBlock(nn.Module):
     ):
         # if the cache is not empty, we need to get the kv cache for self and cross attention
         self_attn_past_key_value = past_key_value_state
+        load_kvs = attn_kwargs.get('load_kvs', None)
+        if load_kvs is not None:
+            _, cache = self.attn(
+                q=x,
+                position_ids=position_ids,
+                past_key_value_state=self_attn_past_key_value,
+                use_cache=use_cache,
+                **attn_kwargs,
+            )
+            return (None, cache)
 
         # first we do MHA and Add&Norm
         residual = x
@@ -284,6 +294,7 @@ class GraniteHeadless(nn.Module):
         if past_key_value_states is None or len(past_key_value_states) == 0:
             past_key_value_states = [None for _ in range(len(self.layers))]
         load_kvs = attn_kwargs.pop('load_kvs', None)
+        apply_norm = load_kvs is None
         if load_kvs is None or len(load_kvs) == 0:
             load_kvs = [None for _ in range(len(self.layers))]
 
@@ -312,9 +323,10 @@ class GraniteHeadless(nn.Module):
                 x_in = output
 
         dec_out = x_in
-        dec_out = self.dec_norm(dec_out)
-        if self.config.p_dropout:
-            dec_out = self.dropout(dec_out)
+        if apply_norm:
+            dec_out = self.dec_norm(dec_out)
+            if self.config.p_dropout:
+                dec_out = self.dropout(dec_out)
 
         return dec_out, present_key_value_states
 
@@ -373,6 +385,7 @@ class Granite(nn.Module):
         only_last_token: bool = False,
         **attn_kwargs: Unpack[AttentionKwargs],
     ):
+        load_kvs = attn_kwargs.get('load_kvs', None)
         get_attention_type(**attn_kwargs)["validate_attn_kwargs"](
             input_ids=x,
             position_ids=position_ids,
@@ -387,6 +400,9 @@ class Granite(nn.Module):
             use_cache,
             **attn_kwargs,
         )
+
+        if load_kvs:
+            return None, cache
 
         if only_last_token:
             output = output[:, -1, :]
