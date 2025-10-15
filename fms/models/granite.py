@@ -283,6 +283,9 @@ class GraniteHeadless(nn.Module):
         # bias: nheads x seq_len x seq_len
         if past_key_value_states is None or len(past_key_value_states) == 0:
             past_key_value_states = [None for _ in range(len(self.layers))]
+        load_kvs = attn_kwargs.pop('load_kvs', None)
+        if load_kvs is None or len(load_kvs) == 0:
+            load_kvs = [None for _ in range(len(self.layers))]
 
         if x_in.dim() == 2:  # input is not already embedded
             x_in = self.embedding(x_in)
@@ -298,6 +301,7 @@ class GraniteHeadless(nn.Module):
                 past_key_value_state=past_key_value_states[i],
                 use_cache=use_cache,
                 **attn_kwargs,
+                load_kvs=load_kvs[i]
             )
 
             if use_cache:

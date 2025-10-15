@@ -658,9 +658,12 @@ class MultiHeadAttention(nn.Module):
         # note: transposes will be moved in a later PR to fix dis-contiguous tensor issues
         queries = q_out.view(batch_size, q_len, self.nheads, self.emb_kq_per_head)
 
-        if attn_kwargs.get('kvs', None ) is not None:
+        attn_compute_dict = get_attention_type(**attn_kwargs)
+
+        load_kvs = attn_kwargs.get('load_kvs')
+        if attn_compute_dict["is_prefill"](**attn_kwargs) and load_kvs is not None:
             # overwrite
-            keys, values = attn_kwargs['load_kvs'].pop(0)
+            keys, values = load_kvs
             keys = keys.to(queries.dtype)
             values = values .to(queries.dtype)
         else:
@@ -672,8 +675,6 @@ class MultiHeadAttention(nn.Module):
                 queries, keys = self.position_encoder.adjusted_qk(
                     queries, keys, position_ids, past_key_value_state, use_cache
                 )
-
-        attn_compute_dict = get_attention_type(**attn_kwargs)
 
         if use_cache:
             if past_key_value_state is None:
