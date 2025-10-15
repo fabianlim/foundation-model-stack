@@ -646,6 +646,9 @@ class MultiHeadAttention(nn.Module):
         if load_kvs is not None:
             # overwrite
             keys, values = load_kvs
+            assert keys.shape == values.shape
+            assert keys.shape[1] == q.shape[1]
+            assert values.shape[1] == q.shape[1]
             keys = keys.to(past_key_value_state[0].dtype)
             values = values.to(past_key_value_state[0].dtype)
 
@@ -659,7 +662,7 @@ class MultiHeadAttention(nn.Module):
                 )
             )
 
-            return None, (keys_return, values_return)
+            return q, (keys_return, values_return)
 
         # q, k, v: batch_size x seq_len x emb_dim
         # mask: batch_size x seq_len x seq_len

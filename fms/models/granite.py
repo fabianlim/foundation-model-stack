@@ -124,14 +124,14 @@ class GraniteBlock(nn.Module):
         self_attn_past_key_value = past_key_value_state
         load_kvs = attn_kwargs.get('load_kvs', None)
         if load_kvs is not None:
-            _, cache = self.attn(
+            x, cache = self.attn(
                 q=x,
                 position_ids=position_ids,
                 past_key_value_state=self_attn_past_key_value,
                 use_cache=use_cache,
                 **attn_kwargs,
             )
-            return (None, cache)
+            return (x, cache)
 
         # first we do MHA and Add&Norm
         residual = x
@@ -296,11 +296,10 @@ class GraniteHeadless(nn.Module):
         load_kvs = attn_kwargs.pop('load_kvs', None)
         apply_norm = load_kvs is None
         if load_kvs is None or len(load_kvs) == 0:
+            if x_in.dim() == 2:  # input is not already embedded
+                x_in = self.embedding(x_in)
+            x_in = x_in * self.config.embedding_multiplier
             load_kvs = [None for _ in range(len(self.layers))]
-
-        if x_in.dim() == 2:  # input is not already embedded
-            x_in = self.embedding(x_in)
-        x_in = x_in * self.config.embedding_multiplier
 
         # this is the output cache for all the decoder layers
         present_key_value_states = []
