@@ -877,7 +877,8 @@ class MultiHeadAttention(nn.Module):
                     attn_mask=M,
                     scale=1,
                 )  # b h l d
-            else:
+
+            elif attn_kwargs.get('mode', None) == 'two-pass':
                 queries = queries.transpose(1,2)  # b rh l d
                 keys = keys.transpose(1,2)  # b h l d
                 values = values.transpose(1,2)  # b h l d
@@ -890,6 +891,32 @@ class MultiHeadAttention(nn.Module):
                 from Universal_Attention_triton.rewrite.autograd import UniversalAttention as UA2
                 attn = UA2.apply(keys, values, queries, static_src, static_dest).to(dtype=queries.dtype)
                 # attn = attn.view(-1, self.kvheads, q_len, self.emb_kq_per_head)
+            elif attn_kwargs.get('mode', None) == 'ahan':
+
+                # bs, seqlen, _, _ = queries.shape
+
+                xq = queries.transpose(1, 2).contiguous()  # (bs, n_local_heads, seqlen, head_dim)
+                xk = keys.transpose(1, 2).contiguous()  # (bs, n_local_heads, seqlen, head_dim)
+                xv = values.transpose(1, 2).contiguous()  # (bs, n_local_heads, seqlen, head_dim)
+
+                from Universal_Attention_triton.Universal_Attention.triton.universal_attention_kernel_opt import attention
+                attn = attention(xq, xk, xv, True, 1.3, static_src, static_dest)
+                # output = output.transpose(
+                #     1, 2
+                # ).contiguous()  # (bs, seqlen, n_local_heads, head_dim)
+                # output = output.view(bs, seqlen, -1)
+
+            else:
+                queries = queries.transpose(1,2)
+                keys = keys.transpose(1,2)  # b h l d
+                values = values.transpose(1,2)  # b h l d
+                mask = _gen_affinity_scores(keys, static_src, static_dest)  # b h l_q l_k
+                r = self.nheads // self.kvheads
+                torch.backends.cuda.enable_math_sdp(False)
+
+                Q = queries.view(batch_size, self.nheads, q_len, -1)
+                from Universal_Attention_triton.rewrite2.autograd import UniversalAttention as UA3
+                attn = UA3.apply(keys, values, Q, mask)
 
             attn = attn.transpose(1,2).contiguous()  # b l h d
             affs = None
