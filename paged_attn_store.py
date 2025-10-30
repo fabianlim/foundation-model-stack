@@ -326,8 +326,8 @@ if __name__ == '__main__':
     MODEL='/mnt/models/tiny-granite-3.3-8b'
     os.environ['COMPILATION_MODE'] = 'offline_decoder'
     os.environ['VLLM_DT_MAX_BATCH_SIZE'] = '2'
-    os.environ['VLLM_DT_MAX_CONTEXT_LEN'] = '128'
-
+    os.environ['VLLM_DT_MAX_CONTEXT_LEN'] = '512'
+    os.environ['VLLM_DT_MAX_BATCH_TKV_LIMIT'] = '1024'
 
     from transformers import AutoTokenizer
     tokenizer = AutoTokenizer.from_pretrained(MODEL)
@@ -528,7 +528,7 @@ if __name__ == '__main__':
         model,
         kwargs,
         logits, 
-        max_new_tokens=7,
+        max_new_tokens=1,
         cache=cache,
         block_numbers=BLOCK_NUMBERS,
     )
